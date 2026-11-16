@@ -67,7 +67,9 @@ CREATE TABLE direct_conversations (
     conversation_id  INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     user1_id         INT NOT NULL REFERENCES users(user_id),
     user2_id         INT NOT NULL REFERENCES users(user_id),
-    created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT chk_canonical_users CHECK (user1_id < user2_id),
+    CONSTRAINT uq_direct_participants UNIQUE (user1_id, user2_id)
 );
 
 CREATE TABLE messages (
