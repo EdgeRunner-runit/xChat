@@ -99,7 +99,7 @@ erDiagram
 
     reactions {
         int message_id PK_FK
+        int user_id PK_FK
         varchar emoji_code PK
-        int user_id FK
         timestamptz reacted_at
     }

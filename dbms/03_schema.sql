@@ -98,5 +98,5 @@ CREATE TABLE reactions (
     user_id      INT NOT NULL REFERENCES users(user_id),
     emoji_code   VARCHAR(50) NOT NULL,
     reacted_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (message_id, emoji_code)
+    PRIMARY KEY (message_id, user_id, emoji_code)
 );
