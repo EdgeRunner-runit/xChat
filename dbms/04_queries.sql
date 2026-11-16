@@ -1,11 +1,13 @@
 -- =====================================================================
--- xChat Messaging Platform - Application SQL Workload Queries (Draft)
+-- xChat Messaging Platform - Application SQL Workload Queries
 -- Schema: xchat
+-- Author: Kushal Garg (kshlgrg) · Enrollment No.: 2501010241
+-- Course: Advanced Programming (AP) / DBMS · Year: B.Tech 2nd Year
 -- Deliverable: Checkpoint 3 (CP3) — Application Queries
 --
 -- STRUCTURE:
---   READ Queries:  R1 through R10
---   WRITE Queries: W1 through W8
+--   READ Queries:  R1 through R10 (10 read operations with extensive JOINs)
+--   WRITE Queries: W1 through W8  (8 transactional write operations)
 -- =====================================================================
 
 SET search_path TO xchat;
@@ -57,7 +59,6 @@ ORDER BY w.name ASC;
 -- @R3
 -- Sidebar Channels: Fetch channels in a workspace with computed unread message count
 -- READ
--- BUG: INNER JOIN excludes empty channels; missing coalesce on last_read_message_id
 SELECT 
     c.channel_id,
     c.name AS channel_name,
@@ -65,12 +66,12 @@ SELECT
     c.is_private,
     cm.role AS membership_role,
     cm.notifications_enabled,
-    count(m.message_id) AS unread_count,
+    count(m.message_id) FILTER (WHERE m.message_id > coalesce(cm.last_read_message_id, 0)) AS unread_count,
     max(m.created_at) AS last_activity_at
 FROM channels c
 JOIN channel_members cm ON cm.channel_id = c.channel_id AND cm.user_id = 1
-JOIN messages m ON m.channel_id = c.channel_id
-WHERE c.workspace_id = 1 AND m.message_id > cm.last_read_message_id
+LEFT JOIN messages m ON m.channel_id = c.channel_id
+WHERE c.workspace_id = 1
 GROUP BY c.channel_id, c.name, c.topic, c.is_private, cm.role, cm.notifications_enabled, cm.last_read_message_id
 ORDER BY c.is_private ASC, c.name ASC;
 
@@ -142,23 +143,31 @@ ORDER BY m.created_at ASC;
 
 
 -- @R6
--- Direct Messaging List: 1-on-1 conversations with other user profile
+-- Direct Messaging List: 1-on-1 conversations with other user profile and latest message preview
 -- READ
--- BUG: Hardcodes user2_id as the contact; fails if user_id 1 is user2
 SELECT 
     dc.conversation_id,
     other_user.user_id AS contact_id,
     other_user.display_name AS contact_name,
     other_user.avatar_url AS contact_avatar,
     coalesce(up.status, 'OFFLINE') AS contact_presence,
-    m.content AS last_message_content,
-    m.created_at AS last_message_time
+    last_msg.content AS last_message_content,
+    last_msg.created_at AS last_message_time
 FROM direct_conversations dc
-JOIN users other_user ON other_user.user_id = dc.user2_id
+JOIN users other_user ON other_user.user_id = CASE 
+    WHEN dc.user1_id = 1 THEN dc.user2_id 
+    ELSE dc.user1_id 
+END
 LEFT JOIN user_presence up ON up.user_id = other_user.user_id
-LEFT JOIN messages m ON m.conversation_id = dc.conversation_id
+LEFT JOIN LATERAL (
+    SELECT content, created_at
+    FROM messages
+    WHERE conversation_id = dc.conversation_id
+    ORDER BY created_at DESC
+    LIMIT 1
+) last_msg ON true
 WHERE dc.user1_id = 1 OR dc.user2_id = 1
-ORDER BY m.created_at DESC NULLS LAST;
+ORDER BY last_msg.created_at DESC NULLS LAST;
 
 
 -- @R7
