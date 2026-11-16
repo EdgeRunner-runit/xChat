@@ -1,5 +1,5 @@
 erDiagram
-    users ||--|| workspaces : "owns (1:1)"
+    users ||--o{ workspaces : "owns (1:N)"
     users ||--o{ workspace_members : "joins (1:N)"
     workspaces ||--|{ workspace_members : "contains (1:N)"
     workspaces ||--|{ channels : "has (1:N)"
@@ -42,9 +42,8 @@ erDiagram
     }
 
     workspace_members {
-        int id PK
-        int workspace_id FK
-        int user_id FK
+        int workspace_id PK_FK
+        int user_id PK_FK
         varchar role
         timestamptz joined_at
     }
@@ -60,11 +59,11 @@ erDiagram
     }
 
     channel_members {
-        int id PK
-        int channel_id FK
-        int user_id FK
+        int channel_id PK_FK
+        int user_id PK_FK
         varchar role
         timestamptz joined_at
+        int last_read_message_id
         boolean notifications_enabled
     }
 

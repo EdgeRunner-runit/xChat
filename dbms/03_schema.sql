@@ -34,11 +34,12 @@ CREATE TABLE workspaces (
 );
 
 CREATE TABLE workspace_members (
-    id            INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     workspace_id  INT NOT NULL REFERENCES workspaces(workspace_id),
     user_id       INT NOT NULL REFERENCES users(user_id),
     role          VARCHAR(20) NOT NULL DEFAULT 'MEMBER',
-    joined_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+    joined_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (workspace_id, user_id),
+    CONSTRAINT chk_workspace_role CHECK (role IN ('OWNER', 'ADMIN', 'MEMBER', 'GUEST'))
 );
 
 CREATE TABLE channels (
@@ -52,12 +53,14 @@ CREATE TABLE channels (
 );
 
 CREATE TABLE channel_members (
-    id                     INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     channel_id             INT NOT NULL REFERENCES channels(channel_id),
     user_id                INT NOT NULL REFERENCES users(user_id),
     role                   VARCHAR(20) NOT NULL DEFAULT 'MEMBER',
     joined_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
-    notifications_enabled  BOOLEAN NOT NULL DEFAULT true
+    last_read_message_id   INT,
+    notifications_enabled  BOOLEAN NOT NULL DEFAULT true,
+    PRIMARY KEY (channel_id, user_id),
+    CONSTRAINT chk_channel_role CHECK (role IN ('ADMIN', 'MEMBER'))
 );
 
 CREATE TABLE direct_conversations (
