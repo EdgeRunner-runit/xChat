@@ -76,9 +76,8 @@ ORDER BY c.is_private ASC, c.name ASC;
 
 
 -- @R4
--- Message Feed: Channel messages with author profile
+-- Message Feed: Paginated channel messages with author profile, reply count, and aggregated reactions
 -- READ
--- BUG: Multiple direct joins on reactions and attachments create Cartesian product count inflation
 SELECT 
     m.message_id,
     m.content,
@@ -90,14 +89,33 @@ SELECT
     u.username AS sender_username,
     u.display_name AS sender_name,
     u.avatar_url AS sender_avatar,
-    count(DISTINCT r.emoji_code) AS reaction_count,
-    count(DISTINCT att.attachment_id) AS total_attachments
+    coalesce(r.reaction_summary, '{}'::json) AS reactions,
+    coalesce(att.attachment_count, 0) AS total_attachments,
+    coalesce(replies.reply_count, 0) AS reply_count
 FROM messages m
 JOIN users u ON u.user_id = m.sender_id
-LEFT JOIN reactions r ON r.message_id = m.message_id
-LEFT JOIN attachments att ON att.message_id = m.message_id
-WHERE m.channel_id = 1 AND m.parent_message_id IS NULL
-GROUP BY m.message_id, u.user_id, u.username, u.display_name, u.avatar_url
+LEFT JOIN (
+    SELECT message_id, json_object_agg(emoji_code, reaction_count) AS reaction_summary
+    FROM (
+        SELECT message_id, emoji_code, count(*) AS reaction_count
+        FROM reactions
+        GROUP BY message_id, emoji_code
+    ) rx
+    GROUP BY message_id
+) r ON r.message_id = m.message_id
+LEFT JOIN (
+    SELECT message_id, count(*) AS attachment_count
+    FROM attachments
+    GROUP BY message_id
+) att ON att.message_id = m.message_id
+LEFT JOIN (
+    SELECT parent_message_id, count(*) AS reply_count
+    FROM messages
+    WHERE parent_message_id IS NOT NULL
+    GROUP BY parent_message_id
+) replies ON replies.parent_message_id = m.message_id
+WHERE m.channel_id = 1 
+  AND m.parent_message_id IS NULL
 ORDER BY m.created_at DESC
 LIMIT 50;
 
@@ -229,35 +247,39 @@ GROUP BY w.workspace_id, w.name;
 -- =====================================================================
 
 -- @W1
--- User Registration: Insert new user and presence
+-- User Registration: Insert new user and initialize presence state
 -- WRITE
--- BUG: Unchained inserts susceptible to foreign key failure
-INSERT INTO users (username, email, password_hash, display_name)
-VALUES ('aryan_d', 'aryan@xchat.io', '$2b$12$e8YkY9U3z9QfG0...', 'Aryan Damara');
-
+WITH new_user AS (
+    INSERT INTO users (username, email, password_hash, display_name)
+    VALUES ('aryan_d', 'aryan@xchat.io', '$2b$12$e8YkY9U3z9QfG0...', 'Aryan Damara')
+    RETURNING user_id
+)
 INSERT INTO user_presence (user_id, status, custom_status_text)
-VALUES (1, 'ONLINE', 'Ready to collaborate');
+SELECT user_id, 'ONLINE', 'Ready to collaborate' FROM new_user;
 
 
 -- @W2
--- Workspace Creation: Create workspace
+-- Workspace Creation: Create workspace and auto-assign owner role
 -- WRITE
--- BUG: Hardcoded IDs without atomic returning
-INSERT INTO workspaces (name, slug, owner_id)
-VALUES ('Engineering Team', 'engineering-team', 1);
-
+WITH new_ws AS (
+    INSERT INTO workspaces (name, slug, owner_id)
+    VALUES ('Engineering Team', 'engineering-team', 1)
+    RETURNING workspace_id, owner_id
+)
 INSERT INTO workspace_members (workspace_id, user_id, role)
-VALUES (1, 1, 'OWNER');
+SELECT workspace_id, owner_id, 'OWNER' FROM new_ws;
 
 
 -- @W3
--- Channel Creation: Create public channel
+-- Channel Creation: Create public channel and auto-subscribe creator
 -- WRITE
-INSERT INTO channels (workspace_id, name, topic, is_private, created_by)
-VALUES (1, 'database-scaling', 'PostgreSQL partitioning and performance discussion', false, 1);
-
+WITH new_ch AS (
+    INSERT INTO channels (workspace_id, name, topic, is_private, created_by)
+    VALUES (1, 'database-scaling', 'PostgreSQL partitioning and performance discussion', false, 1)
+    RETURNING channel_id, created_by
+)
 INSERT INTO channel_members (channel_id, user_id, role)
-VALUES (1, 1, 'ADMIN');
+SELECT channel_id, created_by, 'ADMIN' FROM new_ch;
 
 
 -- @W4
@@ -268,11 +290,11 @@ VALUES (1, 1, 'Partitioning on booking_seats by HASH (show_id) maintains composi
 
 
 -- @W5
--- Add Emoji Reaction: Add reaction
+-- Add Emoji Reaction: Add reaction with duplicate conflict avoidance
 -- WRITE
--- BUG: Lacks ON CONFLICT handling; duplicate reaction crashes transaction
 INSERT INTO reactions (message_id, user_id, emoji_code)
-VALUES (1, 2, 'thumbs_up');
+VALUES (1, 2, 'thumbs_up')
+ON CONFLICT (message_id, user_id, emoji_code) DO NOTHING;
 
 
 -- @W6
