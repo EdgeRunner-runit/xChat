@@ -11,6 +11,7 @@ erDiagram
     users ||--o{ messages : "sends (1:N)"
     channels ||--o{ messages : "receives (0..1:N)"
     direct_conversations ||--o{ messages : "hosts (0..1:N)"
+    messages ||--o{ messages : "replies_to (0..1:N)"
     messages ||--o{ attachments : "includes (1:N)"
     messages ||--o{ reactions : "receives (1:N)"
     users ||--o{ reactions : "gives (1:N)"
@@ -77,9 +78,10 @@ erDiagram
 
     messages {
         int message_id PK
-        int channel_id FK
-        int conversation_id FK
+        int channel_id FK "Nullable"
+        int conversation_id FK "Nullable"
         int sender_id FK
+        int parent_message_id FK "Nullable"
         text content
         varchar message_type
         boolean is_edited

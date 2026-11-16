@@ -77,13 +77,26 @@ CREATE TABLE messages (
     channel_id         INT REFERENCES channels(channel_id),
     conversation_id    INT REFERENCES direct_conversations(conversation_id),
     sender_id          INT NOT NULL REFERENCES users(user_id),
+    parent_message_id  INT REFERENCES messages(message_id),
     content            TEXT NOT NULL,
     message_type       VARCHAR(20) NOT NULL DEFAULT 'TEXT',
     is_edited          BOOLEAN NOT NULL DEFAULT false,
     is_pinned          BOOLEAN NOT NULL DEFAULT false,
     created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT chk_message_destination CHECK (
+        (channel_id IS NOT NULL AND conversation_id IS NULL) OR
+        (channel_id IS NULL AND conversation_id IS NOT NULL)
+    ),
+    CONSTRAINT chk_message_type CHECK (
+        message_type IN ('TEXT', 'IMAGE', 'FILE', 'CODE', 'SYSTEM')
+    )
 );
+
+-- Foreign key link for channel_members read pointer
+ALTER TABLE channel_members 
+    ADD CONSTRAINT fk_channel_members_last_read 
+    FOREIGN KEY (last_read_message_id) REFERENCES messages(message_id);
 
 CREATE TABLE attachments (
     attachment_id    INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
