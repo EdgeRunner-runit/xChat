@@ -1295,8 +1295,9 @@ pub async fn handle_http_connection<S>(
                 }
             }
 
+            let msg_id = uuid::Uuid::new_v4().to_string();
             let msg = ChatMessage {
-                id: uuid::Uuid::new_v4().to_string(),
+                id: msg_id.clone(),
                 sender: "self".to_string(),
                 text: req.text.clone(),
                 time: now_str.clone(),
@@ -1648,11 +1649,7 @@ pub async fn handle_http_connection<S>(
                     // If delivery or session creation failed, update message status to failed
                     {
                         let mut st = state_clone.lock().unwrap();
-                        if let Some(msgs) = st.messages.get_mut(&req.alias) {
-                            if let Some(last_msg) = msgs.last_mut() {
-                                last_msg.status = "failed".to_string();
-                            }
-                        }
+                        mark_message_status(&mut st, &msg_id, "failed");
                         let storage_key = KeyStore::get_or_create_device_storage_key_for_path(
                             Some(&st.session_store_path),
                         )
@@ -1674,11 +1671,37 @@ pub async fn handle_http_connection<S>(
                 // If target was empty or missing for recipient
                 {
                     let mut st = state_clone.lock().unwrap();
-                    if let Some(msgs) = st.messages.get_mut(&req.alias) {
-                        if let Some(last_msg) = msgs.last_mut() {
-                            last_msg.status = "failed".to_string();
-                        }
-                    }
+                    mark_message_status(&mut st, &msg_id, "failed");
+                    let storage_key = KeyStore::get_or_create_device_storage_key_for_path(
+                        Some(&st.session_store_path),
+                    )
+                    .expect("Failed to obtain device storage key; refusing fallback to insecure default");
+                    let _ = save_messages_encrypted(
+                        &st.messages,
+                        &st.messages_store_path,
+                        &storage_key,
+                    );
+                }
+                let resp = json_response(
+                    "400 Bad Request",
+                    r#"{"status":"failed","peers_reached":0,"error":"No destination target or peers available"}"#,
+                    &cors_headers,
+                );
+                let _ = socket.write_all(resp.as_bytes()).await;
+                return;
+            } else {
+                {
+                    let mut st = state_clone.lock().unwrap();
+                    mark_message_status(&mut st, &msg_id, "failed");
+                    let storage_key = KeyStore::get_or_create_device_storage_key_for_path(
+                        Some(&st.session_store_path),
+                    )
+                    .expect("Failed to obtain device storage key; refusing fallback to insecure default");
+                    let _ = save_messages_encrypted(
+                        &st.messages,
+                        &st.messages_store_path,
+                        &storage_key,
+                    );
                 }
                 let resp = json_response(
                     "400 Bad Request",
@@ -2327,6 +2350,16 @@ fn migrate_contact_messages(
             }
         }
         *dest = combined;
+    }
+}
+
+fn mark_message_status(st: &mut AppState, msg_id: &str, status: &str) {
+    for msgs in st.messages.values_mut() {
+        for m in msgs.iter_mut() {
+            if m.id == msg_id {
+                m.status = status.to_string();
+            }
+        }
     }
 }
 
@@ -4192,5 +4225,71 @@ mod tests {
             assert!(!st.messages.contains_key("#testroom"));
             assert!(!st.burner_rooms.contains_key("#testroom"));
         }
+    }
+
+    #[tokio::test]
+    async fn test_failed_send_recorded_and_persisted_as_failed_across_restart() {
+        let (state, temp_dir) = create_test_app_state().await;
+        let csrf_token = state.lock().unwrap().csrf_token.clone();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let state_srv = state.clone();
+        tokio::spawn(run_server_loop(
+            listener,
+            state_srv,
+            "127.0.0.1".to_string(),
+        ));
+
+        // 1. Add contact without a valid network target
+        let add_body = r#"{"alias":"OfflinePeer","target":""}"#;
+        let add_req = format!(
+            "POST /api/contacts HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nX-XChat-Token: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            port, csrf_token, add_body.len(), add_body
+        );
+        let add_resp = send_test_http_request(port, state.clone(), &add_req).await;
+        assert!(add_resp.starts_with("HTTP/1.1 200 OK"));
+
+        // 2. Send message to OfflinePeer -> must fail with 400
+        let send_body = r#"{"alias":"OfflinePeer","target":"","text":"Message to nowhere"}"#;
+        let send_req = format!(
+            "POST /api/send HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nX-XChat-Token: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            port, csrf_token, send_body.len(), send_body
+        );
+        let send_resp = send_test_http_request(port, state.clone(), &send_req).await;
+        assert!(send_resp.contains("400 Bad Request"));
+        assert!(send_resp.contains(r#""status":"failed""#));
+
+        // 3. Query /api/messages?peer=OfflinePeer -> message must be recorded with status failed
+        let get_req = format!(
+            "GET /api/messages?peer=OfflinePeer HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nX-XChat-Token: {}\r\nConnection: close\r\n\r\n",
+            port, csrf_token
+        );
+        let get_resp = send_test_http_request(port, state.clone(), &get_req).await;
+        assert!(get_resp.starts_with("HTTP/1.1 200 OK"));
+        assert!(get_resp.contains(r#""status":"failed""#));
+        assert!(get_resp.contains("Message to nowhere"));
+
+        // 4. Verify disk persistence: reload state from disk
+        let storage_key = KeyStore::get_or_create_device_storage_key_for_path(Some(
+            &temp_dir.path().join("sessions.bin"),
+        ))
+        .unwrap();
+        let loaded_messages =
+            load_messages_encrypted(&temp_dir.path().join("messages.bin"), &storage_key).unwrap();
+        let msgs = loaded_messages
+            .get("OfflinePeer")
+            .or_else(|| {
+                let st = state.lock().unwrap();
+                let c = st
+                    .contacts
+                    .iter()
+                    .find(|c| c.alias == "OfflinePeer")
+                    .unwrap();
+                loaded_messages.get(&c.address)
+            })
+            .expect("Persisted messages must contain OfflinePeer");
+        assert_eq!(msgs[0].status, "failed");
+        assert_eq!(msgs[0].text, "Message to nowhere");
     }
 }

@@ -3801,7 +3801,8 @@ async function sendCurrentMessage() {
     if (!chatHistories[activeContact.alias]) {
         chatHistories[activeContact.alias] = [];
     }
-    chatHistories[activeContact.alias].push({ sender: 'self', text: text, time: timeStr });
+    const newMsg = { sender: 'self', text: text, time: timeStr, status: 'pending' };
+    chatHistories[activeContact.alias].push(newMsg);
     activeContact.last_message = text;
     activeContact.last_time = timeStr;
 
@@ -3826,30 +3827,12 @@ async function sendCurrentMessage() {
         time_str: timeStr
     });
 
-    if (isNative) {
-        const isOffline = (typeof navigator !== 'undefined' && navigator.onLine === false);
-        const isBleTarget = isOffline ||
-                            !activeContact.target || 
-                            activeContact.target === 'local' ||
-                            activeContact.target.startsWith('ble:') || 
-                            activeContact.target === 'Physical BLE Mesh' || 
-                            activeContact.target === 'ble:mesh' ||
-                            (activeContact.status && activeContact.status.toLowerCase().includes('ble')) ||
-                            (activeContact.status && activeContact.status.toLowerCase().includes('bluetooth')) ||
-                            !activeContact.target.includes(':') ||
-                            activeContact.target === '127.0.0.1:8080';
-
-        if (isBleTarget && window.AndroidBridge && window.AndroidBridge.sendBleEnvelope) {
-            let targetMac = (activeContact.target || '').replace('ble:', '');
-            if (targetMac.includes('.') || targetMac === 'mesh') {
-                targetMac = '';
-            }
-            window.AndroidBridge.sendBleEnvelope(targetMac, payload, 'send_' + Date.now());
-        } else if (activeContact.target && activeContact.target !== 'local' && window.AndroidBridge && window.AndroidBridge.sendHttpEnvelope) {
-            window.AndroidBridge.sendHttpEnvelope(activeContact.target, payload, 'send_' + Date.now());
-        } else if (window.AndroidBridge && window.AndroidBridge.sendBleEnvelope) {
-            window.AndroidBridge.sendBleEnvelope('', payload, 'send_' + Date.now());
+    if (isNative && activeContact.target && activeContact.target.startsWith('ble:') && window.AndroidBridge && window.AndroidBridge.sendBleEnvelope) {
+        let targetMac = (activeContact.target || '').replace('ble:', '');
+        if (targetMac.includes('.') || targetMac === 'mesh') {
+            targetMac = '';
         }
+        window.AndroidBridge.sendBleEnvelope(targetMac, payload, 'send_' + Date.now());
     } else {
         try {
             const resp = await fetch(API_BASE + '/api/send', {
@@ -3863,21 +3846,19 @@ async function sendCurrentMessage() {
             });
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok || data.status === 'failed' || data.peers_reached === 0) {
-                const hist = chatHistories[activeContact.alias];
-                if (hist && hist.length > 0) {
-                    hist[hist.length - 1].status = 'failed';
-                    Storage.set('chat_histories', JSON.stringify(chatHistories));
-                    renderMessages();
-                }
+                newMsg.status = 'failed';
+                Storage.set('chat_histories', JSON.stringify(chatHistories));
+                renderMessages();
                 showToast(STRINGS.toastUnreachable(activeContact.alias), true);
-            }
-        } catch(e) {
-            const hist = chatHistories[activeContact.alias];
-            if (hist && hist.length > 0) {
-                hist[hist.length - 1].status = 'failed';
+            } else {
+                newMsg.status = 'sent';
                 Storage.set('chat_histories', JSON.stringify(chatHistories));
                 renderMessages();
             }
+        } catch(e) {
+            newMsg.status = 'failed';
+            Storage.set('chat_histories', JSON.stringify(chatHistories));
+            renderMessages();
             showToast(STRINGS.toastUnreachable(activeContact.alias), true);
         }
     }
